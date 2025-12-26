@@ -138,6 +138,36 @@
       box-shadow: 0 0 40px rgba(255, 69, 0, 1);
     }
 
+    #debugPanel {
+      position: fixed;
+      top: 150px;
+      left: 20px;
+      background: rgba(0, 0, 0, 0.7);
+      color: #4CAF50;
+      padding: 15px;
+      border-radius: 10px;
+      font-family: monospace;
+      font-size: 12px;
+      z-index: 200;
+      display: none;
+      border: 1px solid #4CAF50;
+      backdrop-filter: blur(5px);
+    }
+
+    #audioVisualizer {
+      position: fixed;
+      bottom: 200px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 300px;
+      height: 60px;
+      background: rgba(0, 0, 0, 0.5);
+      border: 1px solid #4CAF50;
+      border-radius: 10px;
+      z-index: 150;
+      display: none;
+    }
+
     @keyframes spin { 
       0% { transform: rotate(0deg); } 
       100% { transform: rotate(360deg); } 
@@ -171,19 +201,25 @@
   <div id="wishText">🎂 Загадай бажання та задуй свічку! 💨</div>
   <div id="flameStatus">🔥 Полум'я палає</div>
   <div id="handIndicator">👋 Покажіть долоню камері</div>
+  <div id="debugPanel"></div>
+  <canvas id="audioVisualizer"></canvas>
   <button id="micBtn">🎤</button>
 
   <script type="module">
     import * as THREE from 'https://unpkg.com/three@0.158.0/build/three.module.js';
     import { FilesetResolver, HandLandmarker } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/+esm";
 
-    // Конфігурація
+    // ОНОВЛЕНА КОНФІГУРАЦІЯ
     const CONFIG = {
       SMOOTHING_FACTOR: 0.6,
       HAND_NOT_DETECTED_THRESHOLD: 30,
-      FLAME_BLOWOUT_THRESHOLD: 0.4,
+      FLAME_BLOWOUT_THRESHOLD: 0.25, // Зменшено для кращої реакції
+      AMPLITUDE_THRESHOLD: 8,        // Поріг амплітуди для подиху
+      LOW_FREQ_RATIO: 0.65,          // Співвідношення низьких частот
       CAKE_SCALE: 0.5,
-      CANDLE_HEIGHT: 0.5
+      CANDLE_HEIGHT: 0.5,
+      BLOW_DURATION_THRESHOLD: 3,    // Мінімальна тривалість подиху (в кадрах)
+      DEBUG_MODE: true               // Включити налагодження
     };
 
     // Стан додатку
@@ -196,7 +232,10 @@
       audioContext: null,
       analyser: null,
       animationId: null,
-      time: 0
+      time: 0,
+      blowCounter: 0,
+      blowDetected: false,
+      lastBlowTime: 0
     };
 
     // DOM елементи
@@ -207,13 +246,16 @@
       wishText: document.getElementById('wishText'),
       flameStatus: document.getElementById('flameStatus'),
       handIndicator: document.getElementById('handIndicator'),
-      micBtn: document.getElementById('micBtn')
+      micBtn: document.getElementById('micBtn'),
+      debugPanel: document.getElementById('debugPanel'),
+      audioVisualizer: document.getElementById('audioVisualizer')
     };
 
     // Three.js змінні
     let scene, camera, renderer;
     let cakeSprite, candle, flameGroup;
     let handLandmarker;
+    let audioVizCtx;
 
     class CakeARApp {
       constructor() {
@@ -291,6 +333,9 @@
         
         // Створюємо гарну свічку з природним полум'ям
         this.createBeautifulCandle();
+        
+        // Ініціалізуємо візуалізатор звуку
+        this.initAudioVisualizer();
       }
 
       async loadCakeSprite() {
@@ -479,6 +524,58 @@
         flameGroup.add(smoke);
       }
 
+      initAudioVisualizer() {
+        audioVizCtx = elements.audioVisualizer.getContext('2d');
+        elements.audioVisualizer.width = 300;
+        elements.audioVisualizer.height = 60;
+      }
+
+      drawAudioVisualizer(timeData, freqData, isBlow) {
+        if (!audioVizCtx || !CONFIG.DEBUG_MODE) return;
+        
+        const ctx = audioVizCtx;
+        ctx.clearRect(0, 0, 300, 60);
+        
+        // Малюємо waveform (тимчасова область)
+        ctx.strokeStyle = isBlow ? '#FF0000' : '#00FF00';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        
+        for (let i = 0; i < timeData.length; i++) {
+          const x = (i / timeData.length) * 300;
+          const y = (1 - (timeData[i] / 255)) * 30;
+          
+          if (i === 0) {
+            ctx.moveTo(x, y);
+          } else {
+            ctx.lineTo(x, y);
+          }
+        }
+        ctx.stroke();
+        
+        // Малюємо спектр (частотна область)
+        ctx.strokeStyle = '#FFFF00';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        
+        for (let i = 0; i < freqData.length; i++) {
+          const x = (i / freqData.length) * 300;
+          const y = 30 + (freqData[i] / 255) * 30;
+          
+          if (i === 0) {
+            ctx.moveTo(x, y);
+          } else {
+            ctx.lineTo(x, y);
+          }
+        }
+        ctx.stroke();
+        
+        // Показуємо статус
+        ctx.fillStyle = isBlow ? '#FF0000' : '#00FF00';
+        ctx.font = '10px monospace';
+        ctx.fillText(isBlow ? 'ПОДИХ ДЕТЕКТОВАНО!' : 'Слухаю...', 10, 55);
+      }
+
       async initHandTracking() {
         const vision = await FilesetResolver.forVisionTasks(
           "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm"
@@ -497,36 +594,61 @@
       setupEventListeners() {
         elements.micBtn.addEventListener('click', () => this.toggleMicrophone());
         window.addEventListener('resize', () => this.onWindowResize());
+        
+        // Додаємо клавішу D для відладки
+        document.addEventListener('keydown', (e) => {
+          if (e.key === 'd' || e.key === 'D') {
+            CONFIG.DEBUG_MODE = !CONFIG.DEBUG_MODE;
+            elements.debugPanel.style.display = CONFIG.DEBUG_MODE ? 'block' : 'none';
+            elements.audioVisualizer.style.display = CONFIG.DEBUG_MODE ? 'block' : 'none';
+          }
+        });
       }
 
       toggleMicrophone() {
         if (state.isMicActive) {
           this.stopMicrophone();
           elements.micBtn.style.background = 'linear-gradient(135deg, #FF4500 0%, #FF6347 100%)';
+          elements.micBtn.innerHTML = '🎤';
         } else {
           this.startMicrophone();
           elements.micBtn.style.background = 'linear-gradient(135deg, #4CAF50 0%, #45a049 100%)';
+          elements.micBtn.innerHTML = '🔊';
         }
       }
 
       async startMicrophone() {
         try {
           const stream = await navigator.mediaDevices.getUserMedia({ 
-            audio: true
+            audio: {
+              echoCancellation: false,
+              noiseSuppression: false,
+              autoGainControl: false
+            }
           });
           
           state.audioContext = new (window.AudioContext || window.webkitAudioContext)();
           const source = state.audioContext.createMediaStreamSource(stream);
           state.analyser = state.audioContext.createAnalyser();
-          state.analyser.fftSize = 256;
-          state.analyser.smoothingTimeConstant = 0.2;
+          
+          // ОНОВЛЕНІ НАЛАШТУВАННЯ ДЛЯ КРАЩОГО ДЕТЕКТУВАННЯ
+          state.analyser.fftSize = 512; // Більше точок для кращого аналізу
+          state.analyser.smoothingTimeConstant = 0.3; // Більше згладжування
+          state.analyser.minDecibels = -90;
+          state.analyser.maxDecibels = -10;
+          
           source.connect(state.analyser);
           
           state.isMicActive = true;
           
+          // Показуємо візуалізатор у режимі налагодження
+          if (CONFIG.DEBUG_MODE) {
+            elements.audioVisualizer.style.display = 'block';
+          }
+          
         } catch (error) {
           console.error('Помилка мікрофона:', error);
-          alert('Дозвольте доступ до мікрофона для задування свічки 🎤');
+          alert('Дозвольте доступ до мікрофона для задування свічки 🎤\nТакож переконайтеся, що мікрофон не заглушений.');
         }
       }
 
@@ -536,22 +658,82 @@
         }
         state.analyser = null;
         state.isMicActive = false;
+        elements.audioVisualizer.style.display = 'none';
       }
 
+      // ОНОВЛЕНА ФУНКЦІЯ checkMicrophoneVolume()
       checkMicrophoneVolume() {
         if (!state.isMicActive || !state.analyser || !state.isFlameLit) return false;
         
-        const dataArray = new Uint8Array(state.analyser.frequencyBinCount);
-        state.analyser.getByteFrequencyData(dataArray);
+        // Додаємо аналіз у тимчасовій області (waveform)
+        const timeDataArray = new Uint8Array(state.analyser.fftSize);
+        state.analyser.getByteTimeDomainData(timeDataArray);
         
-        let sum = 0;
-        for (let i = 0; i < dataArray.length; i++) {
-          sum += dataArray[i];
+        // Обчислюємо середнє значення амплітуди
+        let sumTime = 0;
+        for (let i = 0; i < timeDataArray.length; i++) {
+          sumTime += Math.abs(timeDataArray[i] - 128); // 128 - це "тиша"
         }
-        const average = sum / dataArray.length;
-        const volume = average / 255;
+        const amplitude = sumTime / timeDataArray.length;
         
-        return volume > CONFIG.FLAME_BLOWOUT_THRESHOLD;
+        // Частотний аналіз
+        const freqDataArray = new Uint8Array(state.analyser.frequencyBinCount);
+        state.analyser.getByteFrequencyData(freqDataArray);
+        
+        let sumFreq = 0;
+        for (let i = 0; i < freqDataArray.length; i++) {
+          sumFreq += freqDataArray[i];
+        }
+        const averageFreq = sumFreq / freqDataArray.length;
+        const volume = averageFreq / 255;
+        
+        // Подих має високу амплітуду в тимчасовій області
+        // та низькі частоти (переважно < 500 Гц)
+        const lowFreqSum = freqDataArray.slice(0, Math.floor(freqDataArray.length * 0.2)).reduce((a, b) => a + b, 0);
+        const lowFreqRatio = sumFreq > 0 ? lowFreqSum / sumFreq : 0;
+        
+        // Критерії для подиху:
+        // 1. Висока амплітуда
+        // 2. Переважання низьких частот
+        // 3. Загальна гучність вище порогу
+        const isBlow = amplitude > CONFIG.AMPLITUDE_THRESHOLD && 
+                       lowFreqRatio > CONFIG.LOW_FREQ_RATIO && 
+                       volume > CONFIG.FLAME_BLOWOUT_THRESHOLD;
+        
+        // Візуалізація для налагодження
+        if (CONFIG.DEBUG_MODE) {
+          this.drawAudioVisualizer(timeDataArray, freqDataArray, isBlow);
+          
+          // Оновлюємо панель відладки
+          elements.debugPanel.innerHTML = `
+            <div>Амплітуда: ${amplitude.toFixed(2)}</div>
+            <div>Низькі частоти: ${(lowFreqRatio * 100).toFixed(1)}%</div>
+            <div>Гучність: ${(volume * 100).toFixed(1)}%</div>
+            <div>Подих: ${isBlow ? '✅' : '❌'}</div>
+            <div>Лічильник: ${state.blowCounter}</div>
+            <div style="font-size:10px;color:#888;">Натисніть D для відключення</div>
+          `;
+          
+          // Логування при виявленні подиху
+          if (isBlow && !state.blowDetected) {
+            console.log(`🔊 Подих детектовано! Амплітуда: ${amplitude.toFixed(2)}, Низькі частоти: ${(lowFreqRatio * 100).toFixed(1)}%, Гучність: ${(volume * 100).toFixed(1)}%`);
+          }
+        }
+        
+        // Система підрахунку для запобігання випадковим спрацьовуванням
+        if (isBlow) {
+          state.blowCounter++;
+          state.blowDetected = true;
+          state.lastBlowTime = Date.now();
+        } else {
+          if (Date.now() - state.lastBlowTime > 500) {
+            state.blowCounter = 0;
+            state.blowDetected = false;
+          }
+        }
+        
+        // Спрацьовуємо тільки якщо подих триває достатньо довго
+        return state.blowCounter >= CONFIG.BLOW_DURATION_THRESHOLD;
       }
 
       startAnimation() {
@@ -648,7 +830,7 @@
         
         // Позиціонуємо свічку НАД тортом
         if (candle) {
-          candle.position.set(x, y + 0.5, 0); // Вище на 0.5 одиниці
+          candle.position.set(x, y - 0.2, 0); // НИЖЧЕ на 0.2 одиниці
           candle.lookAt(camera.position);
         }
       }
@@ -693,6 +875,8 @@
       blowOutCandle() {
         state.isFlameLit = false;
         flameGroup.visible = false;
+        state.blowCounter = 0;
+        state.blowDetected = false;
         
         // ЕФЕКТ ЗАДУВАННЯ
         elements.flameStatus.textContent = '💨 Свічка задута! 🎉';
