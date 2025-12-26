@@ -227,20 +227,21 @@
     import { FilesetResolver, HandLandmarker } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/+esm";
 
     // ОНОВЛЕНА КОНФІГУРАЦІЯ
+     // ОНОВЛЕНА КОНФІГУРАЦІЯ
     const CONFIG = {
       SMOOTHING_FACTOR: 0.6,
       HAND_NOT_DETECTED_THRESHOLD: 30,
-      FLAME_BLOWOUT_THRESHOLD: 0.25,     // Для звичайного подиху
-      AMPLITUDE_THRESHOLD: 8,
-      LOW_FREQ_RATIO: 0.65,
+      FLAME_BLOWOUT_THRESHOLD: 0.05,     // ← ЗМІНЕНО: 0.25 → 0.05
+      AMPLITUDE_THRESHOLD: 2,            // ← ЗМІНЕНО: 8 → 2
+      LOW_FREQ_RATIO: 0.5,               // ← ЗМІНЕНО: 0.65 → 0.5
       CAKE_SCALE: 0.5,
       CANDLE_HEIGHT: 0.5,
-      BLOW_DURATION_THRESHOLD: 3,
+      BLOW_DURATION_THRESHOLD: 2,        // ← ЗМІНЕНО: 3 → 2
       DEBUG_MODE: true,
       
       // НОВІ ПОРОГИ ДЛЯ ГАСІННЯ
-      BLOWOUT_EXTREME_THRESHOLD: 0.6,    // Для сильного подиху (гасіння)
-      BLOWOUT_FREQUENCY_MAX: 200         // Максимальна частота для подиху
+      BLOWOUT_EXTREME_THRESHOLD: 0.15,   // ← ЗМІНЕНО: 0.6 → 0.15
+      BLOWOUT_FREQUENCY_MAX: 200
     };
 
     // Стан додатку
@@ -1144,3 +1145,4 @@
   </script>
 </body>
 </html>
+
